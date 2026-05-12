@@ -1,30 +1,34 @@
 # Makefile for diskdiag
 # Supports Linux and macOS (Darwin)
 
-CC      = gcc
 CFLAGS  = -O2 -Wall -Wextra -std=c11
 LDFLAGS = -lm
 
 PREFIX  = /usr/local
 BINDIR  = $(PREFIX)/bin
+MANDIR  = $(PREFIX)/share/man/man8
 TARGET  = diskdiag
 SRC     = diskdiag.c
 MAN     = diskdiag.8
 
+# On macOS, 'gcc' is typically an alias for clang.
+# Use clang explicitly if available, otherwise fall back to gcc.
 UNAME := $(shell uname)
-
 ifeq ($(UNAME), Darwin)
-    MANDIR = $(PREFIX)/share/man/man8
+    CC := $(shell command -v clang 2>/dev/null || echo gcc)
 else
-    MANDIR = $(PREFIX)/share/man/man8
+    CC := $(shell command -v gcc 2>/dev/null || echo cc)
 endif
 
-.PHONY: all clean install uninstall
+.PHONY: all clean install uninstall test
 
 all: $(TARGET)
 
 $(TARGET): $(SRC)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+
+test: $(TARGET)
+	sudo bash tests/run_tests.sh
 
 install: all
 	install -d $(DESTDIR)$(BINDIR)
