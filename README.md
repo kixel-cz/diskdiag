@@ -121,3 +121,8 @@ man diskdiag
 ## See also
 
 `smartctl(8)`, `hdparm(8)`, `badblocks(8)`, `nvme(1)`
+
+## License
+
+Licensed under the [European Union Public Licence v1.2 (EUPL-1.2)](LICENSE),
+a copyleft licence compatible with GPL-2.0, LGPL, MPL, and several others.
