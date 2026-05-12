@@ -3,120 +3,191 @@
 diskdiag \- sequential read latency test with ASCII heatmap
 .SH SYNOPSIS
 .B diskdiag
+.RI [ OPTIONS ]
 .I device
-.RI [ block_size_MiB ]
 .SH DESCRIPTION
 .B diskdiag
-performs a full sequential read of a block device, measures the
-latency of each block and renders an ASCII heatmap of results.
-Unlike SMART attribute readers, it exercises the actual read path
-and reports real-world latency distribution, making it useful for
-detecting degraded areas, aging HDD heads or failing flash cells.
+performs a sequential read of a block device, measures the latency of
+each block and renders an ASCII heatmap of results. Unlike SMART attribute
+readers, it exercises the actual read path and reports real-world latency
+distribution, making it useful for detecting degraded areas, ageing HDD
+heads, or failing flash cells.
 .PP
-The tool opens the device with
+The device is opened with
 .B O_DIRECT
-to bypass the page cache, so results reflect physical media
-performance rather than RAM speed.
+to bypass the page cache, so results reflect physical media performance.
 .PP
-If the device or any of its partitions is currently mounted,
+If the device is currently mounted,
 .B diskdiag
-warns the user and asks for confirmation before proceeding.
-Reads are safe (read-only), but latency results may be skewed by
-concurrent OS I/O on a live system.
+prints a warning to stderr and asks for confirmation.
+Use
+.B \-y
+to suppress the prompt in scripts.
 .SH OPTIONS
 .TP
-.I device
-Block device to test, e.g.
-.BR /dev/sdb .
-Must be readable by the current user (typically requires root).
+.BI \-b " MiB" ", \-\-block\-size=" MiB
+Read block size in mebibytes. Must be between 1 and 1024. Default: 1.
 .TP
-.I block_size_MiB
-Size of each read block in mebibytes. Defaults to
-.BR 1 .
-Larger blocks improve throughput measurement; smaller blocks give
-finer spatial resolution in the heatmap.
-.SH OUTPUT
+.BI \-n " N" ", \-\-blocks=" N
+Read only the first
+.I N
+blocks instead of the whole device. Useful for a quick smoke test.
 .TP
-.B Progress bar
-Shows completion percentage and current block latency in ms.
+.BI \-o " N" ", \-\-offset=" N
+Start reading at block offset
+.IR N .
+Can be combined with
+.B \-n
+to test a specific region of the disk.
 .TP
-.B ASCII heatmap
-Each cell represents the average latency of a disk region.
-Colour and character encode latency:
+.BI \-\-threshold\-warn= ms
+Latency above which a block is counted as slow. Default: 20 ms.
+.TP
+.BI \-\-threshold\-error= ms
+Latency above which a block is counted as an error. Default: 150 ms.
+Must be greater than
+.BR \-\-threshold\-warn .
+.TP
+.BR \-y ", " \-\-yes
+Skip the interactive prompt when the device is mounted. The warning
+is still printed to stderr. Intended for scripted or automated use.
+.TP
+.BR \-q ", " \-\-quiet
+Suppress the progress bar and heatmap. Only the statistics table is
+printed. Useful when redirecting output to a log file.
+.TP
+.BR \-j ", " \-\-json
+Print results as a JSON object to stdout. The progress bar and heatmap
+are suppressed. Mount warnings still go to stderr. Suitable for
+machine-readable pipelines.
+.TP
+.B \-\-no\-color
+Disable ANSI colour escape codes. Automatically enabled when stdout
+is not a terminal (pipe, redirect).
+.TP
+.BR \-h ", " \-\-help
+Print usage information and exit.
+.SH EXIT CODES
+.TP
+.B 0  HEALTHY
+Fewer than 1\~% slow blocks and no read errors.
+.TP
+.B 1  GOOD
+Between 1\~% and 5\~% slow blocks.
+.TP
+.B 2  FAIR
+More than 5\~% slow blocks.
+.TP
+.B 3  POOR
+Read errors detected, or block latency \(>= error threshold.
+.TP
+.B 4
+Runtime error: bad arguments, device cannot be opened, etc.
+.SH HEATMAP
+Each cell in the heatmap represents the average latency of one region.
+Characters and colours encode the latency bucket relative to the
+configured thresholds:
 .RS
 .TP
-.B '.'  (green)
-< 5 ms \(em fast
+.BR '.' "  (green)"
+Very fast (< warn/4)
 .TP
-.B 'o'  (green)
-< 10 ms
+.BR 'o' "  (green)"
+Fast (< warn/2)
 .TP
-.B '*'  (green)
-< 20 ms \(em normal for HDD
+.BR '*' "  (green)"
+Normal (< warn)
 .TP
-.B '#'  (yellow)
-< 50 ms \(em slow
+.BR '#' "  (yellow)"
+Slow (< error/3)
 .TP
-.B 'X'  (red)
-< 150 ms \(em very slow, investigate
+.BR 'X' "  (red)"
+Very slow (< error)
 .TP
-.B '!'  (magenta)
-\(>= 150 ms \(em critical
+.BR '!' "  (magenta)"
+Critical (\(>= error threshold)
 .TP
-.B 'E'  (magenta)
-read error (I/O error returned by kernel)
-.RE
-.TP
-.B Statistics
-Minimum, average, median, P90, P99 and maximum latency;
-throughput in MiB/s; count of slow and error blocks.
-.TP
-.B Health rating
-.RS
-.TP
-.B HEALTHY
-< 1 % slow blocks, no errors
-.TP
-.B GOOD
-1\(en5 % slow blocks
-.TP
-.B FAIR
-> 5 % slow blocks
-.TP
-.B POOR
-read errors or latency \(>= 150 ms detected
+.BR 'E' "  (magenta)"
+Read error returned by the kernel
 .RE
 .SH EXAMPLES
-Test a secondary drive with default 1 MiB blocks:
+Full test of a secondary drive:
 .PP
 .RS
 .B sudo diskdiag /dev/sdb
 .RE
 .PP
-Test with 4 MiB blocks for faster throughput measurement:
+Quick smoke test of the first 1000 blocks with 4 MiB blocks:
 .PP
 .RS
-.B sudo diskdiag /dev/sdb 4
+.B sudo diskdiag \-b 4 \-n 1000 /dev/sdb
 .RE
 .PP
-Stop early at any time with
-.BR Ctrl\-C ;
-partial results and heatmap are displayed immediately.
+Test a specific region (blocks 500\(en999):
+.PP
+.RS
+.B sudo diskdiag \-o 500 \-n 500 /dev/sdb
+.RE
+.PP
+Non-interactive JSON output for use in a monitoring script:
+.PP
+.RS
+.B sudo diskdiag \-y \-q \-\-json /dev/sdb > result.json
+.RE
+.PP
+Check exit code in a shell script:
+.PP
+.RS
+.nf
+sudo diskdiag \-y \-q /dev/sdb
+case $? in
+  0) echo "Healthy" ;;
+  1) echo "Good" ;;
+  2) echo "Fair \- investigation recommended" ;;
+  3) echo "POOR \- immediate attention required" ;;
+esac
+.fi
+.RE
+.PP
+Tighter thresholds for NVMe drives:
+.PP
+.RS
+.B sudo diskdiag \-\-threshold\-warn 2 \-\-threshold\-error 20 /dev/nvme0n1
+.RE
 .SH NOTES
-Always run as root or with read permission on the raw device.
+.B diskdiag
+requires read access to the raw block device, which typically means
+running as root.
 .PP
-For the most accurate results, unmount the device before testing
-or boot from a live USB when testing the system disk.
+For the most accurate results, test an unmounted disk or boot from a
+live USB. Results on a mounted, active system may show elevated latency
+due to competing I/O from the kernel.
 .PP
-NVMe drives typically show < 1 ms latency; HDDs 5\(en20 ms.
-Sustained latency above 50 ms on an HDD suggests head issues or
-imminent failure.
+.B Typical latency reference values:
+.RS
+.TP
+NVMe SSD
+< 1 ms
+.TP
+SATA SSD
+1\(en5 ms
+.TP
+HDD (healthy)
+5\(en20 ms
+.TP
+HDD (degraded)
+> 50 ms
+.RE
+.PP
+Sustained latency above 50 ms on a spinning disk is a strong indicator of
+head issues or imminent failure.
 .SH BUILD
 .nf
-gcc -O2 -Wall -o diskdiag diskdiag.c -lm
+gcc \-O2 \-Wall \-o diskdiag diskdiag.c \-lm
+make && sudo make install
 .fi
 .SH AUTHOR
-Written as an open diagnostic utility. No warranty expressed or implied.
+Released under the European Union Public Licence v1.2 (EUPL\-1.2).
 .SH SEE ALSO
 .BR smartctl (8),
 .BR hdparm (8),
