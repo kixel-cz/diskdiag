@@ -7,7 +7,7 @@ cells.
 
 Supports **Linux** and **macOS**.
 
--![diskdiag screenshot](assets/screenshot.png)
+![diskdiag screenshot](assets/screenshot.png)
 
 ## Dependencies
 
