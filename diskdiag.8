@@ -1,0 +1,124 @@
+.TH DISKDIAG 8 "2026" "diskdiag" "System Administration"
+.SH NAME
+diskdiag \- sequential read latency test with ASCII heatmap
+.SH SYNOPSIS
+.B diskdiag
+.I device
+.RI [ block_size_MiB ]
+.SH DESCRIPTION
+.B diskdiag
+performs a full sequential read of a block device, measures the
+latency of each block and renders an ASCII heatmap of results.
+Unlike SMART attribute readers, it exercises the actual read path
+and reports real-world latency distribution, making it useful for
+detecting degraded areas, aging HDD heads or failing flash cells.
+.PP
+The tool opens the device with
+.B O_DIRECT
+to bypass the page cache, so results reflect physical media
+performance rather than RAM speed.
+.PP
+If the device or any of its partitions is currently mounted,
+.B diskdiag
+warns the user and asks for confirmation before proceeding.
+Reads are safe (read-only), but latency results may be skewed by
+concurrent OS I/O on a live system.
+.SH OPTIONS
+.TP
+.I device
+Block device to test, e.g.
+.BR /dev/sdb .
+Must be readable by the current user (typically requires root).
+.TP
+.I block_size_MiB
+Size of each read block in mebibytes. Defaults to
+.BR 1 .
+Larger blocks improve throughput measurement; smaller blocks give
+finer spatial resolution in the heatmap.
+.SH OUTPUT
+.TP
+.B Progress bar
+Shows completion percentage and current block latency in ms.
+.TP
+.B ASCII heatmap
+Each cell represents the average latency of a disk region.
+Colour and character encode latency:
+.RS
+.TP
+.B '.'  (green)
+< 5 ms \(em fast
+.TP
+.B 'o'  (green)
+< 10 ms
+.TP
+.B '*'  (green)
+< 20 ms \(em normal for HDD
+.TP
+.B '#'  (yellow)
+< 50 ms \(em slow
+.TP
+.B 'X'  (red)
+< 150 ms \(em very slow, investigate
+.TP
+.B '!'  (magenta)
+\(>= 150 ms \(em critical
+.TP
+.B 'E'  (magenta)
+read error (I/O error returned by kernel)
+.RE
+.TP
+.B Statistics
+Minimum, average, median, P90, P99 and maximum latency;
+throughput in MiB/s; count of slow and error blocks.
+.TP
+.B Health rating
+.RS
+.TP
+.B HEALTHY
+< 1 % slow blocks, no errors
+.TP
+.B GOOD
+1\(en5 % slow blocks
+.TP
+.B FAIR
+> 5 % slow blocks
+.TP
+.B POOR
+read errors or latency \(>= 150 ms detected
+.RE
+.SH EXAMPLES
+Test a secondary drive with default 1 MiB blocks:
+.PP
+.RS
+.B sudo diskdiag /dev/sdb
+.RE
+.PP
+Test with 4 MiB blocks for faster throughput measurement:
+.PP
+.RS
+.B sudo diskdiag /dev/sdb 4
+.RE
+.PP
+Stop early at any time with
+.BR Ctrl\-C ;
+partial results and heatmap are displayed immediately.
+.SH NOTES
+Always run as root or with read permission on the raw device.
+.PP
+For the most accurate results, unmount the device before testing
+or boot from a live USB when testing the system disk.
+.PP
+NVMe drives typically show < 1 ms latency; HDDs 5\(en20 ms.
+Sustained latency above 50 ms on an HDD suggests head issues or
+imminent failure.
+.SH BUILD
+.nf
+gcc -O2 -Wall -o diskdiag diskdiag.c -lm
+.fi
+.SH AUTHOR
+Written as an open diagnostic utility. No warranty expressed or implied.
+.SH SEE ALSO
+.BR smartctl (8),
+.BR hdparm (8),
+.BR badblocks (8),
+.BR nvme (1)
