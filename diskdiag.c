@@ -125,12 +125,12 @@ static void progress_bar(uint64_t done, uint64_t total, double cur_ms)
 /* ── ASCII Heatmap ──────────────────────────────────────────────── */
 static const char *cell_colour(double ms, const opts_t *o)
 {
-    if (ms < 0)              return C(COL_MAGENTA);
-    if (ms == 0)             return C(COL_GREY);
-    if (ms < o->warn_ms)     return C(COL_GREEN);
-    if (ms < o->warn_ms * 3) return C(COL_YELLOW);
-    if (ms < o->error_ms)    return C(COL_RED);
-    return C(COL_MAGENTA);
+    if (ms < 0)                return C(COL_MAGENTA); /* 'E' */
+    if (ms == 0)               return C(COL_GREY);    /* ' ' */
+    if (ms < o->warn_ms)       return C(COL_GREEN);   /* '.', 'o', '*' */
+    if (ms < o->error_ms / 3)  return C(COL_YELLOW);  /* '#' */
+    if (ms < o->error_ms)      return C(COL_RED);     /* 'X' */
+    return C(COL_MAGENTA);                            /* '!' */
 }
 
 static char cell_char(double ms, const opts_t *o)
