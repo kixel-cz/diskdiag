@@ -5,6 +5,8 @@ latency measurement. Unlike SMART attribute readers, diskdiag exercises
 the actual read path and can reveal degraded areas, ageing HDD heads, or
 failing flash cells.
 
+![diskdiag screenshot](assets/screenshot.png)
+
 ## Dependencies
 
 Only the standard C library and Linux kernel headers are required.
