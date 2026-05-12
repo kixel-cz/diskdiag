@@ -11,7 +11,14 @@
  *   4  runtime error (bad arguments, cannot open device, ...)
  */
 
-#define _GNU_SOURCE
+#if defined(__APPLE__)
+#  include <sys/disk.h>    /* DKIOCGETBLOCKCOUNT, DKIOCGETBLOCKSIZE */
+#  include <sys/mount.h>   /* getmntinfo(), struct statfs            */
+#else
+#  define _GNU_SOURCE
+#  include <linux/fs.h>    /* BLKGETSIZE64                           */
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -24,7 +31,6 @@
 #include <signal.h>
 #include <getopt.h>
 #include <sys/ioctl.h>
-#include <linux/fs.h>
 #include <sys/stat.h>
 #include <limits.h>
 
@@ -38,7 +44,7 @@
 /* ── Defaults ───────────────────────────────────────────────────── */
 #define DEFAULT_BLOCK_MB    1
 #define DEFAULT_WARN_MS     20.0
-#define DEFAULT_ERROR_MS    150.0
+#define DEFAULT_CRITICAL_MS 150.0
 #define HEATMAP_COLS        72
 #define HEATMAP_ROWS        18
 
@@ -59,7 +65,8 @@ typedef struct {
     uint64_t    max_blocks;      /* 0 = entire disk */
     uint64_t    offset_blocks;   /* start offset in blocks */
     double      warn_ms;
-    double      error_ms;
+    double      critical_ms;  /* latency threshold for POOR rating; actual
+                                 I/O errors are tracked separately          */
     int         yes;             /* -y: skip mount warning prompt */
     int         quiet;           /* -q: no progress bar or heatmap */
     int         json;            /* -j: JSON output */
@@ -125,23 +132,23 @@ static void progress_bar(uint64_t done, uint64_t total, double cur_ms)
 /* ── ASCII Heatmap ──────────────────────────────────────────────── */
 static const char *cell_colour(double ms, const opts_t *o)
 {
-    if (ms < 0)                return C(COL_MAGENTA); /* 'E' */
-    if (ms == 0)               return C(COL_GREY);    /* ' ' */
-    if (ms < o->warn_ms)       return C(COL_GREEN);   /* '.', 'o', '*' */
-    if (ms < o->error_ms / 3)  return C(COL_YELLOW);  /* '#' */
-    if (ms < o->error_ms)      return C(COL_RED);     /* 'X' */
-    return C(COL_MAGENTA);                            /* '!' */
+    if (ms < 0)                  return C(COL_MAGENTA); /* 'E' */
+    if (ms == 0)                 return C(COL_GREY);    /* ' ' */
+    if (ms < o->warn_ms)         return C(COL_GREEN);   /* '.', 'o', '*' */
+    if (ms < o->critical_ms / 3) return C(COL_YELLOW);  /* '#' */
+    if (ms < o->critical_ms)     return C(COL_RED);     /* 'X' */
+    return C(COL_MAGENTA);                              /* '!' */
 }
 
 static char cell_char(double ms, const opts_t *o)
 {
-    if (ms < 0)                return 'E';
-    if (ms == 0)               return ' ';
-    if (ms < o->warn_ms / 4)   return '.';
-    if (ms < o->warn_ms / 2)   return 'o';
-    if (ms < o->warn_ms)       return '*';
-    if (ms < o->error_ms / 3)  return '#';
-    if (ms < o->error_ms)      return 'X';
+    if (ms < 0)                    return 'E';
+    if (ms == 0)                   return ' ';
+    if (ms < o->warn_ms / 4)       return '.';
+    if (ms < o->warn_ms / 2)       return 'o';
+    if (ms < o->warn_ms)           return '*';
+    if (ms < o->critical_ms / 3)   return '#';
+    if (ms < o->critical_ms)       return 'X';
     return '!';
 }
 
@@ -190,24 +197,24 @@ static void draw_heatmap(double *times, uint64_t n_total,
 
     /* Legend – derived from cell_char/cell_colour so it always matches.
      * Each sample value is chosen to land squarely in its bucket:
-     *   ms = 0          → ' '  unread
-     *   ms = warn/8     → '.'  (< warn/4)
-     *   ms = warn*3/8   → 'o'  (< warn/2)
-     *   ms = warn*3/4   → '*'  (< warn)
-     *   ms = warn*1.2   → '#'  (< error/3)  [only if gap exists]
-     *   ms = error*0.6  → 'X'  (< error)
-     *   ms = error*1.5  → '!'  (>= error)
-     *   ms = -1         → 'E'  error
+     *   ms = 0              → ' '  unread
+     *   ms = warn/8         → '.'  (< warn/4)
+     *   ms = warn*3/8       → 'o'  (< warn/2)
+     *   ms = warn*3/4       → '*'  (< warn)
+     *   ms = warn*1.2       → '#'  (< critical/3)  [only if gap exists]
+     *   ms = critical*0.6   → 'X'  (< critical)
+     *   ms = critical*1.5   → '!'  (>= critical)
+     *   ms = -1             → 'E'  I/O error
      */
     struct { double ms; double threshold; const char *fmt; } entries[] = {
-        {  0.0,              0,              "unread"    },
-        {  o->warn_ms/8,     o->warn_ms/4,   "< %.4g ms" },
-        {  o->warn_ms*3/8,   o->warn_ms/2,   "< %.4g ms" },
-        {  o->warn_ms*3/4,   o->warn_ms,     "< %.4g ms" },
-        {  o->warn_ms*1.2,   o->error_ms/3,  "< %.4g ms" },
-        {  o->error_ms*0.6,  o->error_ms,    "< %.4g ms" },
-        {  o->error_ms*1.5,  o->error_ms,    ">= %.4g ms"},
-        { -1.0,              0,              "error"     },
+        {  0.0,                0,                 "unread"     },
+        {  o->warn_ms/8,       o->warn_ms/4,      "< %.4g ms"  },
+        {  o->warn_ms*3/8,     o->warn_ms/2,      "< %.4g ms"  },
+        {  o->warn_ms*3/4,     o->warn_ms,        "< %.4g ms"  },
+        {  o->warn_ms*1.2,     o->critical_ms/3,  "< %.4g ms"  },
+        {  o->critical_ms*0.6, o->critical_ms,    "< %.4g ms"  },
+        {  o->critical_ms*1.5, o->critical_ms,    ">= %.4g ms" },
+        { -1.0,                0,                 "I/O error"  },
     };
 
     printf("  Legend:");
@@ -234,9 +241,10 @@ static void draw_heatmap(double *times, uint64_t n_total,
 /* ── Health rating ──────────────────────────────────────────────── */
 typedef enum { HEALTH_HEALTHY=0, HEALTH_GOOD, HEALTH_FAIR, HEALTH_POOR } health_t;
 
-static health_t health_rating(uint64_t n, uint64_t n_slow, uint64_t n_error)
+static health_t health_rating(uint64_t n, uint64_t n_slow,
+                              uint64_t n_critical, uint64_t n_io_err)
 {
-    if (n_error > 0) return HEALTH_POOR;
+    if (n_io_err > 0 || n_critical > 0) return HEALTH_POOR;
     double slow_pct = (n > 0) ? (double)n_slow / (double)n * 100.0 : 0.0;
     if (slow_pct > 5.0) return HEALTH_FAIR;
     if (slow_pct > 1.0) return HEALTH_GOOD;
@@ -268,7 +276,8 @@ static const char *health_col(health_t h)
 /* ── Human-readable statistics ──────────────────────────────────── */
 static void print_stats(double *times, uint64_t n, double elapsed_s,
                         uint64_t block_bytes, uint64_t n_slow,
-                        uint64_t n_error, const opts_t *o)
+                        uint64_t n_critical, uint64_t n_io_err,
+                        const opts_t *o)
 {
     if (n == 0) { printf("No data.\n"); return; }
 
@@ -278,8 +287,9 @@ static void print_stats(double *times, uint64_t n, double elapsed_s,
     qsort(sorted, n, sizeof(double), cmp_double);
 
     double sum = 0;
-    for (uint64_t i = 0; i < n; i++) sum += times[i];
-    double avg = sum / (double)n;
+    for (uint64_t i = 0; i < n; i++) if (times[i] >= 0) sum += times[i];
+    uint64_t n_valid = (n_io_err <= n) ? n - n_io_err : 0;
+    double avg = (n_valid > 0) ? sum / (double)n_valid : 0.0;
 
     double total_bytes = (double)n * (double)block_bytes;
     double speed_mbs   = (elapsed_s > 0)
@@ -287,32 +297,35 @@ static void print_stats(double *times, uint64_t n, double elapsed_s,
     char sz_read[32];
     human_size((uint64_t)total_bytes, sz_read, sizeof(sz_read));
 
-    double   slow_pct  = (double)n_slow  / (double)n * 100.0;
-    double   error_pct = (double)n_error / (double)n * 100.0;
-    health_t h = health_rating(n, n_slow, n_error);
+    double slow_pct     = (double)n_slow     / (double)n * 100.0;
+    double critical_pct = (double)n_critical / (double)n * 100.0;
+    double io_err_pct   = (double)n_io_err   / (double)n * 100.0;
+    health_t h = health_rating(n, n_slow, n_critical, n_io_err);
 
     printf("\n%s%s══════════════════ Results ══════════════════%s\n",
            C(COL_BOLD), C(COL_CYAN), C(COL_RESET));
-    printf("  Blocks read  : %lu  (%s)\n", (unsigned long)n, sz_read);
-    printf("  Elapsed      : %.1f s\n", elapsed_s);
-    printf("  Throughput   : %.1f MiB/s\n", speed_mbs);
+    printf("  Blocks read    : %lu  (%s)\n", (unsigned long)n, sz_read);
+    printf("  Elapsed        : %.1f s\n", elapsed_s);
+    printf("  Throughput     : %.1f MiB/s\n", speed_mbs);
     printf("%s──────────────── Latency (ms) ───────────────%s\n",
            C(COL_BOLD), C(COL_RESET));
-    printf("  Min          : %.2f ms\n", sorted[0]);
-    printf("  Avg          : %.2f ms\n", avg);
-    printf("  Median (P50) : %.2f ms\n", percentile(sorted, n, 50));
-    printf("  P90          : %.2f ms\n", percentile(sorted, n, 90));
-    printf("  P99          : %.2f ms\n", percentile(sorted, n, 99));
-    printf("  Max          : %.2f ms\n", sorted[n - 1]);
+    printf("  Min            : %.2f ms\n", sorted[0] < 0 ? 0.0 : sorted[0]);
+    printf("  Avg            : %.2f ms\n", avg);
+    printf("  Median (P50)   : %.2f ms\n", percentile(sorted, n, 50));
+    printf("  P90            : %.2f ms\n", percentile(sorted, n, 90));
+    printf("  P99            : %.2f ms\n", percentile(sorted, n, 99));
+    printf("  Max            : %.2f ms\n", sorted[n - 1]);
     printf("%s──────────────── Health ──────────────────────%s\n",
            C(COL_BOLD), C(COL_RESET));
-    printf("  Warn  threshold : %.0f ms\n", o->warn_ms);
-    printf("  Error threshold : %.0f ms\n", o->error_ms);
-    printf("  Slow blocks  : %lu  (%.2f%%)\n",
+    printf("  Warn threshold : %.0f ms\n", o->warn_ms);
+    printf("  Crit threshold : %.0f ms\n", o->critical_ms);
+    printf("  Slow blocks    : %lu  (%.2f%%)\n",
            (unsigned long)n_slow, slow_pct);
-    printf("  Error blocks : %lu  (%.2f%%)\n",
-           (unsigned long)n_error, error_pct);
-    printf("%s  Disk health  : %s%s%s%s\n",
+    printf("  Critical blocks: %lu  (%.2f%%)\n",
+           (unsigned long)n_critical, critical_pct);
+    printf("  I/O errors     : %lu  (%.2f%%)\n",
+           (unsigned long)n_io_err, io_err_pct);
+    printf("%s  Disk health   : %s%s%s%s\n",
            C(COL_BOLD), C(health_col(h)), health_str(h),
            C(COL_RESET), C(COL_RESET));
     printf("%s%s═════════════════════════════════════════════%s\n",
@@ -345,7 +358,8 @@ static void json_print_string(const char *s)
 /* ── JSON output ────────────────────────────────────────────────── */
 static void print_json(double *times, uint64_t n, double elapsed_s,
                        uint64_t block_bytes, uint64_t n_slow,
-                       uint64_t n_error, const opts_t *o)
+                       uint64_t n_critical, uint64_t n_io_err,
+                       const opts_t *o)
 {
     if (n == 0) { printf("{\"error\":\"no data\"}\n"); return; }
 
@@ -355,15 +369,16 @@ static void print_json(double *times, uint64_t n, double elapsed_s,
     qsort(sorted, n, sizeof(double), cmp_double);
 
     double sum = 0;
-    for (uint64_t i = 0; i < n; i++) sum += times[i];
-    double avg = sum / (double)n;
-
+    for (uint64_t i = 0; i < n; i++) if (times[i] >= 0) sum += times[i];
+    uint64_t n_valid   = (n_io_err <= n) ? n - n_io_err : 0;
+    double   avg       = (n_valid > 0) ? sum / (double)n_valid : 0.0;
     double   total_bytes = (double)n * (double)block_bytes;
     double   speed_mbs   = (elapsed_s > 0)
                          ? (total_bytes / 1024.0 / 1024.0) / elapsed_s : 0.0;
-    double   slow_pct    = (double)n_slow  / (double)n * 100.0;
-    double   error_pct   = (double)n_error / (double)n * 100.0;
-    health_t h = health_rating(n, n_slow, n_error);
+    double slow_pct     = (double)n_slow     / (double)n * 100.0;
+    double critical_pct = (double)n_critical / (double)n * 100.0;
+    double io_err_pct   = (double)n_io_err   / (double)n * 100.0;
+    health_t h = health_rating(n, n_slow, n_critical, n_io_err);
 
     printf("{\n");
     printf("  \"device\": ");
@@ -376,7 +391,7 @@ static void print_json(double *times, uint64_t n, double elapsed_s,
     printf("  \"elapsed_s\": %.3f,\n", elapsed_s);
     printf("  \"throughput_mib_s\": %.2f,\n", speed_mbs);
     printf("  \"latency_ms\": {\n");
-    printf("    \"min\": %.3f,\n", sorted[0]);
+    printf("    \"min\": %.3f,\n", sorted[0] < 0 ? 0.0 : sorted[0]);
     printf("    \"avg\": %.3f,\n", avg);
     printf("    \"p50\": %.3f,\n", percentile(sorted, n, 50));
     printf("    \"p90\": %.3f,\n", percentile(sorted, n, 90));
@@ -384,13 +399,15 @@ static void print_json(double *times, uint64_t n, double elapsed_s,
     printf("    \"max\": %.3f\n",  sorted[n - 1]);
     printf("  },\n");
     printf("  \"thresholds_ms\": {\n");
-    printf("    \"warn\":  %.0f,\n", o->warn_ms);
-    printf("    \"error\": %.0f\n",  o->error_ms);
+    printf("    \"warn\":     %.0f,\n", o->warn_ms);
+    printf("    \"critical\": %.0f\n",  o->critical_ms);
     printf("  },\n");
-    printf("  \"slow_blocks\":  %lu,\n", (unsigned long)n_slow);
-    printf("  \"error_blocks\": %lu,\n", (unsigned long)n_error);
-    printf("  \"slow_pct\":  %.4f,\n", slow_pct);
-    printf("  \"error_pct\": %.4f,\n", error_pct);
+    printf("  \"slow_blocks\":     %lu,\n", (unsigned long)n_slow);
+    printf("  \"critical_blocks\": %lu,\n", (unsigned long)n_critical);
+    printf("  \"io_errors\":       %lu,\n", (unsigned long)n_io_err);
+    printf("  \"slow_pct\":     %.4f,\n", slow_pct);
+    printf("  \"critical_pct\": %.4f,\n", critical_pct);
+    printf("  \"io_error_pct\": %.4f,\n", io_err_pct);
     printf("  \"health\": \"%s\",\n", health_str(h));
     printf("  \"exit_code\": %d\n", (int)h);
     printf("}\n");
@@ -407,13 +424,28 @@ static int check_mounted(const char *dev, int force)
         real_dev[PATH_MAX - 1] = '\0';
     }
 
+    int  count = 0;
+    char matches[16][PATH_MAX * 2];
+
+#if defined(__APPLE__)
+    struct statfs *mounts;
+    int nmounts = getmntinfo(&mounts, MNT_NOWAIT);
+    for (int i = 0; i < nmounts && count < 16; i++) {
+        char real_mdev[PATH_MAX];
+        if (!realpath(mounts[i].f_mntfromname, real_mdev)) {
+            strncpy(real_mdev, mounts[i].f_mntfromname, PATH_MAX - 1);
+            real_mdev[PATH_MAX - 1] = '\0';
+        }
+        size_t devlen = strlen(real_dev);
+        if (strncmp(real_mdev, real_dev, devlen) == 0)
+            snprintf(matches[count++], PATH_MAX * 2,
+                     "    %s  ->  %s", real_mdev, mounts[i].f_mntonname);
+    }
+#else
     FILE *f = fopen("/proc/mounts", "r");
     if (!f) return 0;
 
     char line[1024];
-    int  count = 0;
-    char matches[16][PATH_MAX * 2];
-
     while (fgets(line, sizeof(line), f) && count < 16) {
         char mdev[256], mpoint[256];
         if (sscanf(line, "%255s %255s", mdev, mpoint) != 2) continue;
@@ -431,6 +463,7 @@ static int check_mounted(const char *dev, int force)
                      "    %s  ->  %s", real_mdev, mpoint);
     }
     fclose(f);
+#endif
 
     if (count == 0) return 0;
 
@@ -443,7 +476,7 @@ static int check_mounted(const char *dev, int force)
         "\n"
         "  Read-only access cannot corrupt data, but latency results\n"
         "  may be skewed by background OS I/O (journaling, writeback,\n"
-        "  prefetch). For accurate diagnostics use a live USB.\n\n");
+        "  prefetch). For accurate diagnostics unmount the disk first.\n\n");
 
     if (force) {
         fprintf(stderr, "  Continuing due to -y / --yes.\n\n");
@@ -476,17 +509,17 @@ static void usage(const char *prog)
         "Measure sequential read latency across a block device.\n"
         "\n"
         "Options:\n"
-        "  -b, --block-size <MiB>      Read block size, 1-1024 (default: %d)\n"
-        "  -n, --blocks <N>            Test only the first N blocks\n"
-        "  -o, --offset <N>            Start at block offset N\n"
-        "      --threshold-warn <ms>   Warn threshold (default: %.0f ms)\n"
-        "      --threshold-error <ms>  Error threshold (default: %.0f ms)\n"
-        "  -y, --yes                   Skip mounted-device prompt\n"
-        "  -q, --quiet                 Suppress progress bar and heatmap;\n"
-        "                              print only the statistics table\n"
-        "  -j, --json                  Output results as JSON (implies --quiet)\n"
-        "      --no-color              Disable ANSI colour output\n"
-        "  -h, --help                  Show this help\n"
+        "  -b, --block-size <MiB>         Read block size, 1-1024 (default: %d)\n"
+        "  -n, --blocks <N>               Test only the first N blocks\n"
+        "  -o, --offset <N>               Start at block offset N\n"
+        "      --threshold-warn <ms>      Slow block threshold (default: %.0f ms)\n"
+        "      --threshold-critical <ms>  Critical latency threshold (default: %.0f ms)\n"
+        "  -y, --yes                      Skip mounted-device prompt\n"
+        "  -q, --quiet                    Suppress progress bar and heatmap;\n"
+        "                                 print only the statistics table\n"
+        "  -j, --json                     Output results as JSON (implies --quiet)\n"
+        "      --no-color                 Disable ANSI colour output\n"
+        "  -h, --help                     Show this help\n"
         "\n"
         "Exit codes:\n"
         "  0  HEALTHY  (< 1 %% slow blocks, no errors)\n"
@@ -500,9 +533,9 @@ static void usage(const char *prog)
         "  sudo diskdiag -b 4 -n 1000 /dev/sdb\n"
         "  sudo diskdiag -o 500 -n 500 /dev/sdb\n"
         "  sudo diskdiag -y -q --json /dev/sdb > result.json\n"
-        "  sudo diskdiag --threshold-warn 5 --threshold-error 50 /dev/nvme0n1\n"
+        "  sudo diskdiag --threshold-warn 5 --threshold-critical 50 /dev/nvme0n1\n"
         "  sudo diskdiag -y -q /dev/sdb; echo \"health: $?\"\n",
-        prog, DEFAULT_BLOCK_MB, DEFAULT_WARN_MS, DEFAULT_ERROR_MS);
+        prog, DEFAULT_BLOCK_MB, DEFAULT_WARN_MS, DEFAULT_CRITICAL_MS);
 }
 
 /* ── Main ───────────────────────────────────────────────────────── */
@@ -514,7 +547,7 @@ int main(int argc, char *argv[])
         .max_blocks    = 0,
         .offset_blocks = 0,
         .warn_ms       = DEFAULT_WARN_MS,
-        .error_ms      = DEFAULT_ERROR_MS,
+        .critical_ms   = DEFAULT_CRITICAL_MS,
         .yes           = 0,
         .quiet         = 0,
         .json          = 0,
@@ -522,19 +555,19 @@ int main(int argc, char *argv[])
     };
 
     /* Long-only option codes (above ASCII range to avoid clashes) */
-    enum { OPT_WARN = 128, OPT_ERROR, OPT_NOCOLOR };
+    enum { OPT_WARN = 128, OPT_CRITICAL, OPT_NOCOLOR };
 
     static struct option long_opts[] = {
-        { "block-size",      required_argument, 0, 'b'       },
-        { "blocks",          required_argument, 0, 'n'       },
-        { "offset",          required_argument, 0, 'o'       },
-        { "threshold-warn",  required_argument, 0, OPT_WARN  },
-        { "threshold-error", required_argument, 0, OPT_ERROR },
-        { "yes",             no_argument,       0, 'y'       },
-        { "quiet",           no_argument,       0, 'q'       },
-        { "json",            no_argument,       0, 'j'       },
-        { "no-color",        no_argument,       0, OPT_NOCOLOR },
-        { "help",            no_argument,       0, 'h'       },
+        { "block-size",        required_argument, 0, 'b'          },
+        { "blocks",            required_argument, 0, 'n'          },
+        { "offset",            required_argument, 0, 'o'          },
+        { "threshold-warn",    required_argument, 0, OPT_WARN     },
+        { "threshold-critical",required_argument, 0, OPT_CRITICAL },
+        { "yes",               no_argument,       0, 'y'          },
+        { "quiet",             no_argument,       0, 'q'          },
+        { "json",              no_argument,       0, 'j'          },
+        { "no-color",          no_argument,       0, OPT_NOCOLOR  },
+        { "help",              no_argument,       0, 'h'          },
         { 0, 0, 0, 0 }
     };
 
@@ -580,13 +613,13 @@ int main(int argc, char *argv[])
             }
             o.warn_ms = dv;
             break;
-        case OPT_ERROR:
+        case OPT_CRITICAL:
             dv = strtod(optarg, &end);
             if (end == optarg || *end != '\0' || dv <= 0 || isinf(dv) || isnan(dv)) {
-                fprintf(stderr, "Invalid error threshold '%s'.\n", optarg);
+                fprintf(stderr, "Invalid critical threshold '%s'.\n", optarg);
                 return EXIT_ERROR;
             }
-            o.error_ms = dv;
+            o.critical_ms = dv;
             break;
         case 'y': o.yes      = 1;        break;
         case 'q': o.quiet    = 1;        break;
@@ -606,10 +639,10 @@ int main(int argc, char *argv[])
     }
     o.device = argv[optind];
 
-    if (o.warn_ms >= o.error_ms) {
+    if (o.warn_ms >= o.critical_ms) {
         fprintf(stderr,
             "Error: --threshold-warn (%.0f ms) must be less than "
-            "--threshold-error (%.0f ms).\n", o.warn_ms, o.error_ms);
+            "--threshold-critical (%.0f ms).\n", o.warn_ms, o.critical_ms);
         return EXIT_ERROR;
     }
 
@@ -617,26 +650,64 @@ int main(int argc, char *argv[])
     if (o.no_color || !isatty(STDOUT_FILENO))
         g_color = 0;
 
+    /* Auto-suppress progress bar when stdout is not a full terminal.
+     * \r (carriage return) only works correctly on terminals that support
+     * it – on dumb terminals or pipes it just fills the screen with lines.
+     * isatty() catches pipes and redirects; TERM=dumb catches terminals
+     * that don't support cursor movement (e.g. Emacs shell buffer). */
+    const char *term = getenv("TERM");
+    if (!isatty(STDOUT_FILENO) || (term && strcmp(term, "dumb") == 0))
+        o.quiet = 1;
+
     /* ── Mount check ────────────────────────────────────────────── */
     if (check_mounted(o.device, o.yes) == -1)
         return EXIT_ERROR;
 
     /* ── Open device ────────────────────────────────────────────── */
+#if defined(__APPLE__)
+    int fd = open(o.device, O_RDONLY);
+    if (fd < 0) {
+        perror("open");
+        fprintf(stderr, "Hint: run as root (sudo).\n");
+        return EXIT_ERROR;
+    }
+    /* Disable page cache on macOS – equivalent of O_DIRECT on Linux */
+    if (fcntl(fd, F_NOCACHE, 1) < 0) {
+        perror("fcntl F_NOCACHE");
+        close(fd); return EXIT_ERROR;
+    }
+#else
     int fd = open(o.device, O_RDONLY | O_DIRECT);
     if (fd < 0) {
         perror("open");
-        fprintf(stderr, "Hint: run as root.\n");
+        fprintf(stderr, "Hint: run as root (sudo).\n");
         return EXIT_ERROR;
     }
+#endif
 
     /* ── Device size ────────────────────────────────────────────── */
     uint64_t dev_size = 0;
+#if defined(__APPLE__)
+    uint32_t blk_size  = 0;
+    uint64_t blk_count = 0;
+    if (ioctl(fd, DKIOCGETBLOCKSIZE,  &blk_size)  < 0 ||
+        ioctl(fd, DKIOCGETBLOCKCOUNT, &blk_count) < 0) {
+        /* Fallback: seek to end */
+        off_t sz = lseek(fd, 0, SEEK_END);
+        if (sz < 0) { perror("lseek"); close(fd); return EXIT_ERROR; }
+        dev_size = (uint64_t)sz;
+        lseek(fd, 0, SEEK_SET);
+    } else {
+        dev_size = (uint64_t)blk_size * blk_count;
+    }
+#else
     if (ioctl(fd, BLKGETSIZE64, &dev_size) < 0) {
         off_t sz = lseek(fd, 0, SEEK_END);
         if (sz < 0) { perror("lseek"); close(fd); return EXIT_ERROR; }
         dev_size = (uint64_t)sz;
         lseek(fd, 0, SEEK_SET);
     }
+#endif
 
     size_t   block_bytes  = o.block_mb * (size_t)1024 * (size_t)1024;
     uint64_t total_blocks = dev_size / block_bytes;
@@ -675,8 +746,8 @@ int main(int argc, char *argv[])
         printf("  Blocks     : %lu", (unsigned long)n_total);
         if (o.offset_blocks)
             printf("  (offset: %lu)", (unsigned long)o.offset_blocks);
-        printf("\n  Thresholds : warn %.0f ms / error %.0f ms\n",
-               o.warn_ms, o.error_ms);
+        printf("\n  Thresholds : warn %.0f ms / critical %.0f ms\n",
+               o.warn_ms, o.critical_ms);
         printf("  Press Ctrl-C to stop early and show partial results.\n\n");
     }
 
@@ -694,10 +765,11 @@ int main(int argc, char *argv[])
     signal(SIGINT, on_sigint);
 
     /* ── Main read loop ─────────────────────────────────────────── */
-    double   t_start = now_ms();
-    uint64_t n_read  = 0;
-    uint64_t n_slow  = 0;
-    uint64_t n_error = 0;
+    double   t_start    = now_ms();
+    uint64_t n_read     = 0;
+    uint64_t n_slow     = 0;
+    uint64_t n_critical = 0;
+    uint64_t n_io_err   = 0;
 
     for (uint64_t i = 0; i < n_total && !g_stop; i++) {
         double  t0 = now_ms();
@@ -706,11 +778,11 @@ int main(int argc, char *argv[])
 
         if (r < 0) {
             times[i] = -1.0;
-            n_error++;
+            n_io_err++;
             lseek(fd, (off_t)block_bytes, SEEK_CUR);
         } else {
             times[i] = ms;
-            if (ms >= o.error_ms)    n_error++;
+            if (ms >= o.critical_ms)  n_critical++;
             else if (ms >= o.warn_ms) n_slow++;
         }
         n_read   = i + 1;
@@ -732,14 +804,16 @@ int main(int argc, char *argv[])
 
     /* ── Output ─────────────────────────────────────────────────── */
     if (o.json) {
-        print_json(times, n_read, elapsed, block_bytes, n_slow, n_error, &o);
+        print_json(times, n_read, elapsed, block_bytes,
+                   n_slow, n_critical, n_io_err, &o);
     } else {
         if (!o.quiet)
             draw_heatmap(times, n_total, n_read, block_bytes, &o);
-        print_stats(times, n_read, elapsed, block_bytes, n_slow, n_error, &o);
+        print_stats(times, n_read, elapsed, block_bytes,
+                    n_slow, n_critical, n_io_err, &o);
     }
 
-    health_t h = health_rating(n_read, n_slow, n_error);
+    health_t h = health_rating(n_read, n_slow, n_critical, n_io_err);
 
     free(times);
     free(buf);

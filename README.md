@@ -1,25 +1,29 @@
 # diskdiag
 
-A Linux command-line tool for disk diagnostics based on sequential read
-latency measurement. Unlike SMART attribute readers, diskdiag exercises
-the actual read path and can reveal degraded areas, ageing HDD heads, or
-failing flash cells.
+A command-line tool for disk diagnostics based on sequential read latency
+measurement. Unlike SMART attribute readers, diskdiag exercises the actual
+read path and can reveal degraded areas, ageing HDD heads, or failing flash
+cells.
 
-![diskdiag screenshot](assets/screenshot.png)
+Supports **Linux** and **macOS**.
 
 ## Dependencies
 
-Only the standard C library and Linux kernel headers are required.
+Only the standard C library and system headers are required.
 No external dependencies.
 
-```
-gcc    # typically the build-essential package (Debian/Ubuntu) or gcc (Fedora)
-make
-```
+| Platform | Compiler | Notes |
+|----------|----------|-------|
+| Linux | `gcc` | `build-essential` package on Debian/Ubuntu, `gcc` on Fedora |
+| macOS | `clang` or `gcc` | Xcode Command Line Tools: `xcode-select --install` |
 
 ## Build and install
 
+Clone the repository and build:
+
 ```bash
+git clone https://github.com/kixel-cz/diskdiag.git
+cd diskdiag
 make
 sudo make install          # installs to /usr/local/bin
 ```
@@ -41,6 +45,15 @@ sudo make uninstall
 ```
 sudo diskdiag [OPTIONS] <device>
 ```
+
+### Device names by platform
+
+| Platform | Example devices |
+|----------|----------------|
+| Linux | `/dev/sda`, `/dev/sdb`, `/dev/nvme0n1` |
+| macOS | `/dev/disk0`, `/dev/disk2` |
+
+On macOS, use `diskutil list` to identify the correct device before testing.
 
 ### Options
 
@@ -71,7 +84,8 @@ sudo diskdiag [OPTIONS] <device>
 
 ```bash
 # Full test with default settings
-sudo diskdiag /dev/sdb
+sudo diskdiag /dev/sdb            # Linux
+sudo diskdiag /dev/disk2          # macOS
 
 # Larger blocks – faster pass, coarser heatmap
 sudo diskdiag -b 4 /dev/sdb
@@ -176,16 +190,32 @@ with downstream parsing. The device path is properly escaped in the JSON output.
 data. If the device is currently mounted, diskdiag prints a warning to stderr
 and asks for confirmation. Pass `-y / --yes` to skip the prompt in automated
 use. Results may be skewed by concurrent OS I/O (journaling, writeback,
-prefetch); for precise diagnostics test an unmounted disk or boot from a
-live USB.
+prefetch); for precise diagnostics unmount the disk first.
 
-The device is opened with `O_DIRECT` to bypass the page cache, so latency
-reflects actual media performance rather than RAM speed.
+The device is opened with `O_DIRECT` (Linux) or `F_NOCACHE` (macOS) to
+bypass the page cache, so latency reflects actual media performance rather
+than RAM speed.
 
 Colour output is automatically disabled when stdout is not a terminal
 (pipe, redirect). Use `--no-color` to force it off in any context.
 
+### macOS system disk
+
+On macOS 10.15 and later, the system volume is protected by System Integrity
+Protection (SIP) and mounted as a read-only snapshot. Direct access via
+`/dev/diskX` is blocked even for root. This affects only the system disk —
+external and secondary drives work without any restrictions.
+
+To identify available disks on macOS:
+
+```bash
+diskutil list
+```
+
 **Typical latency reference values:**
+
+The numbers below assume a quality controller and a fast bus. Real-world
+results can differ significantly depending on the controller and connection:
 
 | Drive type      | Expected latency |
 |-----------------|------------------|
@@ -194,8 +224,27 @@ Colour output is automatically disabled when stdout is not a terminal
 | HDD (healthy)   | 5–20 ms          |
 | HDD (degraded)  | > 50 ms          |
 
-Sustained latency above 50 ms on a spinning disk is a strong indicator of
-head issues or imminent failure and warrants immediate attention.
+**Controller and bus impact:**
+
+A slow or low-quality controller can add several milliseconds of overhead
+regardless of the drive itself. Budget USB enclosures and chipsets are a
+common culprit — the drive may be perfectly healthy while the enclosure
+limits throughput and inflates latency.
+
+Connection speed matters equally:
+
+| Interface      | Typical throughput |
+|----------------|--------------------|
+| USB 1.1        | ~1 MB/s            |
+| USB 2.0        | ~40 MB/s           |
+| USB 3.2 Gen 1  | ~400 MB/s          |
+| USB 3.2 Gen 2  | ~900 MB/s          |
+| Thunderbolt 3/4| ~2500 MB/s         |
+
+An HDD connected over USB 2.0 may show latency of 50–100 ms not because
+the drive is failing, but because the bus itself is the bottleneck.
+If results look unexpectedly poor, try a different cable, port, or enclosure
+before drawing conclusions about the drive's health.
 
 ## Man page
 
@@ -212,4 +261,4 @@ a copyleft licence compatible with GPL-2.0, LGPL, MPL, and several others.
 
 ## See also
 
-`smartctl(8)`, `hdparm(8)`, `badblocks(8)`, `nvme(1)`
+`smartctl(8)`, `hdparm(8)`, `badblocks(8)`, `nvme(1)`, `diskutil(8)`

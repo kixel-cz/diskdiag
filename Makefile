@@ -1,4 +1,5 @@
 # Makefile for diskdiag
+# Supports Linux and macOS (Darwin)
 
 CC      = gcc
 CFLAGS  = -O2 -Wall -Wextra -std=c11
@@ -6,11 +7,17 @@ LDFLAGS = -lm
 
 PREFIX  = /usr/local
 BINDIR  = $(PREFIX)/bin
-MANDIR  = $(PREFIX)/share/man/man8
-
 TARGET  = diskdiag
 SRC     = diskdiag.c
 MAN     = diskdiag.8
+
+UNAME := $(shell uname)
+
+ifeq ($(UNAME), Darwin)
+    MANDIR = $(PREFIX)/share/man/man8
+else
+    MANDIR = $(PREFIX)/share/man/man8
+endif
 
 .PHONY: all clean install uninstall
 
