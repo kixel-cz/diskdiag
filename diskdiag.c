@@ -188,16 +188,44 @@ static void draw_heatmap(double *times, uint64_t n_total,
     for (int c = 0; c < HEATMAP_COLS; c++) printf("─");
     printf("┘\n%s", C(COL_RESET));
 
-    printf("  Legend: %s' '%s unread  "
-           "%s'.' fast  '*' <%.0fms%s  "
-           "%s'#' slow%s  "
-           "%s'X' <%.0fms%s  "
-           "%s'!' ≥%.0fms / 'E' error%s\n",
-           C(COL_GREY),    C(COL_RESET),
-           C(COL_GREEN),   o->warn_ms,  C(COL_RESET),
-           C(COL_YELLOW),               C(COL_RESET),
-           C(COL_RED),     o->error_ms, C(COL_RESET),
-           C(COL_MAGENTA), o->error_ms, C(COL_RESET));
+    /* Legend – derived from cell_char/cell_colour so it always matches.
+     * Each sample value is chosen to land squarely in its bucket:
+     *   ms = 0          → ' '  unread
+     *   ms = warn/8     → '.'  (< warn/4)
+     *   ms = warn*3/8   → 'o'  (< warn/2)
+     *   ms = warn*3/4   → '*'  (< warn)
+     *   ms = warn*1.2   → '#'  (< error/3)  [only if gap exists]
+     *   ms = error*0.6  → 'X'  (< error)
+     *   ms = error*1.5  → '!'  (>= error)
+     *   ms = -1         → 'E'  error
+     */
+    struct { double ms; double threshold; const char *fmt; } entries[] = {
+        {  0.0,              0,              "unread"    },
+        {  o->warn_ms/8,     o->warn_ms/4,   "< %.4g ms" },
+        {  o->warn_ms*3/8,   o->warn_ms/2,   "< %.4g ms" },
+        {  o->warn_ms*3/4,   o->warn_ms,     "< %.4g ms" },
+        {  o->warn_ms*1.2,   o->error_ms/3,  "< %.4g ms" },
+        {  o->error_ms*0.6,  o->error_ms,    "< %.4g ms" },
+        {  o->error_ms*1.5,  o->error_ms,    ">= %.4g ms"},
+        { -1.0,              0,              "error"     },
+    };
+
+    printf("  Legend:");
+    char prev_sym = '\0';
+    for (int e = 0; e < 8; e++) {
+        char sym = cell_char(entries[e].ms, o);
+        /* Skip bucket if it produces the same symbol as the previous one
+         * (happens when warn_ms is very small and buckets collapse) */
+        if (sym == prev_sym && e > 0 && e < 7) continue;
+        prev_sym = sym;
+        const char *col = cell_colour(entries[e].ms, o);
+        printf("  %s'%c'%s ", col, sym, C(COL_RESET));
+        if (entries[e].threshold > 0)
+            printf(entries[e].fmt, entries[e].threshold);
+        else
+            printf("%s", entries[e].fmt);
+    }
+    printf("\n");
 
     free(bucket);
     free(bcount);
