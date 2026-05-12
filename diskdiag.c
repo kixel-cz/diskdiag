@@ -305,9 +305,10 @@ static int check_mounted(const char *dev)
         "  Continue anyway? [y/N] ");
     fflush(stdout);
 
-    int c = getchar();
-    while (c != '\n' && c != EOF) c = getchar(); /* flush line */
-    if (c != 'y' && c != 'Y') {
+    int answer = getchar();
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF) ; /* flush rest of line */
+    if (answer != 'y' && answer != 'Y') {
         printf("Aborted.\n\n");
         return -1;
     }
