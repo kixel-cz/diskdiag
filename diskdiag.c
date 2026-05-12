@@ -689,13 +689,18 @@ int main(int argc, char *argv[])
         g_n_read = n_read;
 
         if (!o.quiet && !o.json && (i % 16 == 0))
-            progress_bar(i, n_total, times[i] < 0 ? 9999.0 : times[i]);
+            progress_bar(n_read, n_total, times[i] < 0 ? 9999.0 : times[i]);
     }
 
     double elapsed = (now_ms() - t_start) / 1000.0;
 
-    if (!o.quiet && !o.json)
+    if (!o.quiet && !o.json) {
+        /* Final update – guarantees 100 % is always displayed */
+        double last_ms = (n_read > 0 && times[n_read - 1] >= 0)
+                       ? times[n_read - 1] : 9999.0;
+        progress_bar(n_read, n_total, last_ms);
         printf("\n");
+    }
 
     /* ── Output ─────────────────────────────────────────────────── */
     if (o.json) {
