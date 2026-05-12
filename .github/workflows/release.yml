@@ -22,11 +22,6 @@ jobs:
             arch: arm64
             cc: clang
             ldflags: ""
-          - runner: macos-13
-            os: macos
-            arch: x86_64
-            cc: clang
-            ldflags: ""
 
     steps:
       - name: Checkout
