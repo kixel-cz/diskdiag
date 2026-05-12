@@ -159,22 +159,30 @@ static void draw_heatmap(double *times, uint64_t n_total,
     int cells = HEATMAP_COLS * HEATMAP_ROWS;
 
     double *bucket = calloc((size_t)cells, sizeof(double));
-    int    *bcount = calloc((size_t)cells, sizeof(int));
-    if (!bucket || !bcount) { free(bucket); free(bcount); return; }
+    if (!bucket) return;
+
+    /* Each cell shows the worst (highest) latency in that region.
+     * I/O errors (-1.0) are treated as worst possible so they always
+     * show as 'E' regardless of other reads in the same cell.        */
+    for (int c = 0; c < cells; c++) bucket[c] = 0.0;
 
     for (uint64_t i = 0; i < n_read; i++) {
         int cell = (int)((double)i / (double)n_total * cells);
         if (cell >= cells) cell = cells - 1;
-        bucket[cell] += times[i];
-        bcount[cell]++;
+        double ms = times[i];
+        if (ms < 0) {
+            /* I/O error – mark cell permanently as error */
+            bucket[cell] = -1.0;
+        } else if (bucket[cell] >= 0 && ms > bucket[cell]) {
+            bucket[cell] = ms;
+        }
+        /* If bucket is already -1 (error), leave it */
     }
-    for (int c = 0; c < cells; c++)
-        if (bcount[c]) bucket[c] /= bcount[c];
 
     char sz[32];
     uint64_t cell_bytes = (uint64_t)((double)n_total / cells) * block_bytes;
     human_size(cell_bytes, sz, sizeof(sz));
-    printf("\n%s%s  Heatmap  (each cell ≈ %s)%s\n",
+    printf("\n%s%s  Heatmap  (worst latency per region, each cell ≈ %s)%s\n",
            C(COL_BOLD), C(COL_CYAN), sz, C(COL_RESET));
 
     printf("%s  ┌", C(COL_GREY));
@@ -235,7 +243,6 @@ static void draw_heatmap(double *times, uint64_t n_total,
     printf("\n");
 
     free(bucket);
-    free(bcount);
 }
 
 /* ── Health rating ──────────────────────────────────────────────── */
