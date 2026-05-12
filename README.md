@@ -7,6 +7,8 @@ cells.
 
 Supports **Linux** and **macOS**.
 
+-![diskdiag screenshot](assets/screenshot.png)
+
 ## Dependencies
 
 Only the standard C library and system headers are required.
