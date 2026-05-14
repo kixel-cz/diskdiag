@@ -124,7 +124,7 @@ static void progress_bar(uint64_t done, uint64_t total, double cur_ms)
     printf("\r%s[", C(COL_BOLD));
     for (int i = 0; i < width; i++)
         printf("%s", i < filled ? "█" : "░");
-    printf("%s] %5.1f%%  cur:%6.1f ms%s",
+    printf("%s] %5.1f%%  cur:%6.1f ms/MiB%s",
            C(COL_RESET), pct * 100.0, cur_ms, C(COL_RESET));
     fflush(stdout);
 }
