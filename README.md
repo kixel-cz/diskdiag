@@ -64,13 +64,17 @@ On macOS, use `diskutil list` to identify the correct device before testing.
 | `-b, --block-size <MiB>` | Read block size, 1–1024 (default: 1) |
 | `-n, --blocks <N>` | Test only the first N blocks |
 | `-o, --offset <N>` | Start at block offset N |
-| `--threshold-warn <ms>` | Slow block threshold (default: 20 ms) |
-| `--threshold-error <ms>` | Error block threshold (default: 150 ms) |
+| `--threshold-warn <ms/MiB>` | Slow block threshold (default: 20 ms/MiB) |
+| `--threshold-critical <ms/MiB>` | Critical latency threshold (default: 150 ms/MiB) |
 | `-y, --yes` | Skip the mounted-device prompt |
 | `-q, --quiet` | Suppress progress bar and heatmap; print only the statistics table |
 | `-j, --json` | Output results as JSON |
 | `--no-color` | Disable ANSI colour output |
 | `-h, --help` | Show help |
+
+Latency thresholds are specified in **ms/MiB** (milliseconds per mebibyte),
+which makes results comparable regardless of the block size used. A 4 MiB
+block read in 16 ms and a 1 MiB block read in 4 ms both equal 4 ms/MiB.
 
 ### Exit codes
 
@@ -79,7 +83,7 @@ On macOS, use `diskutil list` to identify the correct device before testing.
 | `0` | **HEALTHY** – < 1 % slow blocks, no errors |
 | `1` | **GOOD** – 1–5 % slow blocks |
 | `2` | **FAIR** – > 5 % slow blocks |
-| `3` | **POOR** – read errors or latency >= error threshold |
+| `3` | **POOR** – critical latency or I/O errors detected |
 | `4` | Runtime error (bad arguments, cannot open device, ...) |
 
 ## Examples
@@ -89,7 +93,7 @@ On macOS, use `diskutil list` to identify the correct device before testing.
 sudo diskdiag /dev/sdb            # Linux
 sudo diskdiag /dev/disk2          # macOS
 
-# Larger blocks – faster pass, coarser heatmap
+# Larger blocks – faster pass, same latency scale
 sudo diskdiag -b 4 /dev/sdb
 
 # Quick smoke test of the first 1000 blocks
@@ -99,7 +103,7 @@ sudo diskdiag -n 1000 /dev/sdb
 sudo diskdiag -o 500 -n 500 /dev/sdb
 
 # Tighter thresholds for NVMe drives
-sudo diskdiag --threshold-warn 2 --threshold-error 20 /dev/nvme0n1
+sudo diskdiag --threshold-warn 2 --threshold-critical 20 /dev/nvme0n1
 
 # Non-interactive JSON output for scripts or monitoring pipelines
 sudo diskdiag -y -q --json /dev/sdb > result.json
@@ -121,37 +125,43 @@ printed immediately from the portion of the disk read so far.
 
 ### Progress bar
 
-Shows completion percentage and the latency of the most recently read block
-in milliseconds.
+Shows completion percentage and the normalized latency of the most recently
+read block in ms/MiB.
 
 ### ASCII heatmap
 
-Each cell represents the average read latency of one region of the disk.
-The character and colour encode the speed relative to the configured thresholds:
+Each cell represents the **worst** (highest) normalized latency recorded in
+that region of the disk. Using the worst value rather than the average ensures
+that isolated slow blocks or I/O errors are always visible and cannot be hidden
+by surrounding fast reads.
 
-| Char | Colour  | Latency             |
-|------|---------|---------------------|
-| `.`  | green   | < warn / 4          |
-| `o`  | green   | < warn / 2          |
-| `*`  | green   | < warn threshold    |
-| `#`  | yellow  | < error / 3         |
-| `X`  | red     | < error threshold   |
-| `!`  | magenta | >= error threshold  |
-| `E`  | magenta | read error          |
+Latency is normalized to ms/MiB so the heatmap looks the same regardless of
+block size. Characters and colours encode the latency relative to the configured
+thresholds:
+
+| Char | Colour  | Latency                  |
+|------|---------|--------------------------|
+| `.`  | green   | < warn / 4               |
+| `o`  | green   | < warn / 2               |
+| `*`  | green   | < warn threshold         |
+| `#`  | yellow  | < critical / 3           |
+| `X`  | red     | < critical threshold     |
+| `!`  | magenta | >= critical threshold    |
+| `E`  | magenta | I/O error                |
 
 ### Statistics
 
-Minimum, average, median (P50), P90, P99, and maximum latency;
-throughput in MiB/s; count of slow and error blocks.
+Minimum, average, median (P50), P90, P99, and maximum latency in ms/MiB;
+throughput in MiB/s; count of slow, critical, and I/O error blocks.
 
 ### Health rating
 
-| Rating  | Condition                                  |
-|---------|--------------------------------------------|
-| HEALTHY | < 1 % slow blocks, no errors               |
-| GOOD    | 1–5 % slow blocks                          |
-| FAIR    | > 5 % slow blocks                          |
-| POOR    | read errors or latency >= error threshold  |
+| Rating  | Condition                                       |
+|---------|-------------------------------------------------|
+| HEALTHY | < 1 % slow blocks, no critical blocks or errors |
+| GOOD    | 1–5 % slow blocks                               |
+| FAIR    | > 5 % slow blocks                               |
+| POOR    | critical latency blocks or I/O errors detected  |
 
 ### JSON output
 
@@ -168,7 +178,7 @@ with downstream parsing. The device path is properly escaped in the JSON output.
   "bytes_read": 7812808704,
   "elapsed_s": 142.551,
   "throughput_mib_s": 52.14,
-  "latency_ms": {
+  "latency_ms_per_mib": {
     "min": 4.123,
     "avg": 9.847,
     "p50": 8.901,
@@ -176,11 +186,13 @@ with downstream parsing. The device path is properly escaped in the JSON output.
     "p99": 38.441,
     "max": 187.002
   },
-  "thresholds_ms": { "warn": 20, "error": 150 },
+  "thresholds_ms_per_mib": { "warn": 20, "critical": 150 },
   "slow_blocks": 312,
-  "error_blocks": 1,
+  "critical_blocks": 3,
+  "io_errors": 1,
   "slow_pct": 4.1867,
-  "error_pct": 0.0134,
+  "critical_pct": 0.0403,
+  "io_error_pct": 0.0134,
   "health": "POOR",
   "exit_code": 3
 }
@@ -214,17 +226,20 @@ To identify available disks on macOS:
 diskutil list
 ```
 
-**Typical latency reference values:**
+### Interpreting results
 
+Latency is normalized to ms/MiB, making results independent of block size.
 The numbers below assume a quality controller and a fast bus. Real-world
-results can differ significantly depending on the controller and connection:
+results can differ significantly depending on the controller and connection.
+
+**Typical reference values:**
 
 | Drive type      | Expected latency |
 |-----------------|------------------|
-| NVMe SSD        | < 1 ms           |
-| SATA SSD        | 1–5 ms           |
-| HDD (healthy)   | 5–20 ms          |
-| HDD (degraded)  | > 50 ms          |
+| NVMe SSD        | < 1 ms/MiB       |
+| SATA SSD        | 1–5 ms/MiB       |
+| HDD (healthy)   | 5–20 ms/MiB      |
+| HDD (degraded)  | > 50 ms/MiB      |
 
 **Controller and bus impact:**
 
@@ -232,8 +247,6 @@ A slow or low-quality controller can add several milliseconds of overhead
 regardless of the drive itself. Budget USB enclosures and chipsets are a
 common culprit — the drive may be perfectly healthy while the enclosure
 limits throughput and inflates latency.
-
-Connection speed matters equally:
 
 | Interface      | Typical throughput |
 |----------------|--------------------|
@@ -243,10 +256,18 @@ Connection speed matters equally:
 | USB 3.2 Gen 2  | ~900 MB/s          |
 | Thunderbolt 3/4| ~2500 MB/s         |
 
-An HDD connected over USB 2.0 may show latency of 50–100 ms not because
-the drive is failing, but because the bus itself is the bottleneck.
-If results look unexpectedly poor, try a different cable, port, or enclosure
-before drawing conclusions about the drive's health.
+An HDD connected over USB 2.0 may show elevated latency not because the drive
+is failing, but because the bus itself is the bottleneck. If results look
+unexpectedly poor, try a different cable, port, or enclosure before drawing
+conclusions about the drive's health.
+
+**Remote use:** if you plan to detach from the terminal (tmux, screen) or
+run over SSH, use `-q` from the start to avoid the progress bar filling the
+scroll buffer:
+
+```bash
+nohup sudo diskdiag -q /dev/sdb > result.txt 2>&1 &
+```
 
 ## Man page
 

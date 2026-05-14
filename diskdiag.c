@@ -215,14 +215,14 @@ static void draw_heatmap(double *times, uint64_t n_total,
      *   ms = -1             → 'E'  I/O error
      */
     struct { double ms; double threshold; const char *fmt; } entries[] = {
-        {  0.0,                0,                 "unread"     },
-        {  o->warn_ms/8,       o->warn_ms/4,      "< %.4g ms"  },
-        {  o->warn_ms*3/8,     o->warn_ms/2,      "< %.4g ms"  },
-        {  o->warn_ms*3/4,     o->warn_ms,        "< %.4g ms"  },
-        {  o->warn_ms*1.2,     o->critical_ms/3,  "< %.4g ms"  },
-        {  o->critical_ms*0.6, o->critical_ms,    "< %.4g ms"  },
-        {  o->critical_ms*1.5, o->critical_ms,    ">= %.4g ms" },
-        { -1.0,                0,                 "I/O error"  },
+        {  0.0,                0,                 "unread"          },
+        {  o->warn_ms/8,       o->warn_ms/4,      "< %.4g ms/MiB"  },
+        {  o->warn_ms*3/8,     o->warn_ms/2,      "< %.4g ms/MiB"  },
+        {  o->warn_ms*3/4,     o->warn_ms,        "< %.4g ms/MiB"  },
+        {  o->warn_ms*1.2,     o->critical_ms/3,  "< %.4g ms/MiB"  },
+        {  o->critical_ms*0.6, o->critical_ms,    "< %.4g ms/MiB"  },
+        {  o->critical_ms*1.5, o->critical_ms,    ">= %.4g ms/MiB" },
+        { -1.0,                0,                 "I/O error"       },
     };
 
     printf("  Legend:");
@@ -314,18 +314,18 @@ static void print_stats(double *times, uint64_t n, double elapsed_s,
     printf("  Blocks read    : %lu  (%s)\n", (unsigned long)n, sz_read);
     printf("  Elapsed        : %.1f s\n", elapsed_s);
     printf("  Throughput     : %.1f MiB/s\n", speed_mbs);
-    printf("%s──────────────── Latency (ms) ───────────────%s\n",
+    printf("%s──────────────── Latency (ms/MiB) ──────────%s\n",
            C(COL_BOLD), C(COL_RESET));
-    printf("  Min            : %.2f ms\n", sorted[0] < 0 ? 0.0 : sorted[0]);
-    printf("  Avg            : %.2f ms\n", avg);
-    printf("  Median (P50)   : %.2f ms\n", percentile(sorted, n, 50));
-    printf("  P90            : %.2f ms\n", percentile(sorted, n, 90));
-    printf("  P99            : %.2f ms\n", percentile(sorted, n, 99));
-    printf("  Max            : %.2f ms\n", sorted[n - 1]);
+    printf("  Min            : %.2f ms/MiB\n", sorted[0] < 0 ? 0.0 : sorted[0]);
+    printf("  Avg            : %.2f ms/MiB\n", avg);
+    printf("  Median (P50)   : %.2f ms/MiB\n", percentile(sorted, n, 50));
+    printf("  P90            : %.2f ms/MiB\n", percentile(sorted, n, 90));
+    printf("  P99            : %.2f ms/MiB\n", percentile(sorted, n, 99));
+    printf("  Max            : %.2f ms/MiB\n", sorted[n - 1]);
     printf("%s──────────────── Health ──────────────────────%s\n",
            C(COL_BOLD), C(COL_RESET));
-    printf("  Warn threshold : %.0f ms\n", o->warn_ms);
-    printf("  Crit threshold : %.0f ms\n", o->critical_ms);
+    printf("  Warn threshold : %.0f ms/MiB\n", o->warn_ms);
+    printf("  Crit threshold : %.0f ms/MiB\n", o->critical_ms);
     printf("  Slow blocks    : %lu  (%.2f%%)\n",
            (unsigned long)n_slow, slow_pct);
     printf("  Critical blocks: %lu  (%.2f%%)\n",
@@ -397,7 +397,7 @@ static void print_json(double *times, uint64_t n, double elapsed_s,
     printf("  \"bytes_read\": %.0f,\n", total_bytes);
     printf("  \"elapsed_s\": %.3f,\n", elapsed_s);
     printf("  \"throughput_mib_s\": %.2f,\n", speed_mbs);
-    printf("  \"latency_ms\": {\n");
+    printf("  \"latency_ms_per_mib\": {\n");
     printf("    \"min\": %.3f,\n", sorted[0] < 0 ? 0.0 : sorted[0]);
     printf("    \"avg\": %.3f,\n", avg);
     printf("    \"p50\": %.3f,\n", percentile(sorted, n, 50));
@@ -405,7 +405,7 @@ static void print_json(double *times, uint64_t n, double elapsed_s,
     printf("    \"p99\": %.3f,\n", percentile(sorted, n, 99));
     printf("    \"max\": %.3f\n",  sorted[n - 1]);
     printf("  },\n");
-    printf("  \"thresholds_ms\": {\n");
+    printf("  \"thresholds_ms_per_mib\": {\n");
     printf("    \"warn\":     %.0f,\n", o->warn_ms);
     printf("    \"critical\": %.0f\n",  o->critical_ms);
     printf("  },\n");
@@ -519,8 +519,8 @@ static void usage(const char *prog)
         "  -b, --block-size <MiB>         Read block size, 1-1024 (default: %d)\n"
         "  -n, --blocks <N>               Test only the first N blocks\n"
         "  -o, --offset <N>               Start at block offset N\n"
-        "      --threshold-warn <ms>      Slow block threshold (default: %.0f ms)\n"
-        "      --threshold-critical <ms>  Critical latency threshold (default: %.0f ms)\n"
+        "      --threshold-warn <ms/MiB>      Slow block threshold (default: %.0f ms/MiB)\n"
+        "      --threshold-critical <ms/MiB>  Critical latency threshold (default: %.0f ms/MiB)\n"
         "  -y, --yes                      Skip mounted-device prompt\n"
         "  -q, --quiet                    Suppress progress bar and heatmap;\n"
         "                                 print only the statistics table\n"
@@ -753,7 +753,7 @@ int main(int argc, char *argv[])
         printf("  Blocks     : %lu", (unsigned long)n_total);
         if (o.offset_blocks)
             printf("  (offset: %lu)", (unsigned long)o.offset_blocks);
-        printf("\n  Thresholds : warn %.0f ms / critical %.0f ms\n",
+        printf("\n  Thresholds : warn %.0f ms/MiB / critical %.0f ms/MiB\n",
                o.warn_ms, o.critical_ms);
         printf("  Press Ctrl-C to stop early and show partial results.\n\n");
     }
@@ -788,15 +788,20 @@ int main(int argc, char *argv[])
             n_io_err++;
             lseek(fd, (off_t)block_bytes, SEEK_CUR);
         } else {
-            times[i] = ms;
-            if (ms >= o.critical_ms)  n_critical++;
-            else if (ms >= o.warn_ms) n_slow++;
+            /* Normalize to ms/MiB so results are comparable across
+             * different block sizes: 4ms on 1MiB == 16ms on 4MiB. */
+            double norm = ms / (double)o.block_mb;
+            times[i] = norm;
+            if (norm >= o.critical_ms)  n_critical++;
+            else if (norm >= o.warn_ms) n_slow++;
         }
         n_read   = i + 1;
         g_n_read = n_read;
 
-        if (!o.quiet && !o.json && (i % 16 == 0))
-            progress_bar(n_read, n_total, times[i] < 0 ? 9999.0 : times[i]);
+        if (!o.quiet && !o.json && (i % 16 == 0)) {
+            double display = times[i] < 0 ? 9999.0 : times[i];
+            progress_bar(n_read, n_total, display);
+        }
     }
 
     double elapsed = (now_ms() - t_start) / 1000.0;
